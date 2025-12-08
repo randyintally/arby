@@ -1,4 +1,13 @@
 FROM node:20-alpine
+
 WORKDIR /app
+
+# Install dependencies (we don't have any yet, but this keeps it standard)
+COPY package*.json ./
+RUN npm install --only=production || true
+
+# Copy the rest of the app
 COPY . .
-CMD ["node", "-e", "console.log('Arby bot placeholder running')"]
+
+# Start the bot
+CMD ["npm", "start"]
