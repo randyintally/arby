@@ -2,7 +2,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies (we don't have any yet, but this keeps it standard)
+# Install dependencies
 COPY package*.json ./
 RUN npm install --only=production || true
 
