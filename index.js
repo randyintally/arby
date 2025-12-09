@@ -1,18 +1,21 @@
 const http = require("http");
 const { Connection, PublicKey } = require("@solana/web3.js");
+const { getAccount, getMint } = require("@solana/spl-token");
+const BN = require("bn.js");
+const { CpAmm } = require("@meteora-ag/cp-amm-sdk");
 
 // -------------------------
 // Config
 // -------------------------
 
-// Public Solana RPC for now (replace with private later for speed)
+// Public Solana RPC for now (replace with private for speed & fewer 429s)
 const RPC_URL = "https://api.mainnet-beta.solana.com";
 const connection = new Connection(RPC_URL);
 
 // QBS mint
 const QBS_MINT = new PublicKey("2BAKjB47KpQD64m3nWGWrNjC2ZTwWpumYakJVgavdXQa");
 
-// WSOL mint (wrapped SOL)
+// WSOL mint
 const WSOL_MINT = new PublicKey(
   "So11111111111111111111111111111111111111112"
 );
@@ -26,6 +29,9 @@ const METEORA_POOL = new PublicKey(
 const ORCA_POOL = new PublicKey(
   "DqGpLwvYHFupJqgQJtmGTMhX6UM1Uw9SgXL8qRWGXq72"
 );
+
+// Polling interval (ms). 10000 = 10s; increase if you hit 429s.
+const LOOP_DELAY_MS = 20000;
 
 // -------------------------
 // DigitalOcean Healthcheck Server
@@ -47,63 +53,161 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Helper to sum uiAmount from parsed token accounts
+// Sum uiAmount on Orca side (simple owner=mint trick)
 function sumUiAmount(tokenAccounts) {
   if (!tokenAccounts || !tokenAccounts.value) return 0;
   let total = 0;
   for (const acc of tokenAccounts.value) {
     try {
       const amountInfo = acc.account.data.parsed.info.tokenAmount;
-      const uiAmount = amountInfo.uiAmount; // already adjusted for decimals
+      const uiAmount = amountInfo.uiAmount;
       if (typeof uiAmount === "number") {
         total += uiAmount;
       }
     } catch (e) {
-      // ignore malformed accounts
+      // ignore bad accounts
     }
   }
   return total;
 }
 
 // -------------------------
-// Price helpers
+// Meteora SDK setup
 // -------------------------
 
-async function getPoolBalances(poolPubkey) {
-  // QBS balance in pool
+const cpAmm = new CpAmm(connection);
+
+let meteoraInitialized = false;
+let meteoraQbsVault = null;
+let meteoraWsolVault = null;
+let qbsDecimals = null;
+let wsolDecimals = null;
+
+async function initMeteoraPool() {
+  console.log("Initializing Meteora DAMM v2 pool via SDK...");
+
+  const poolState = await cpAmm.fetchPoolState(METEORA_POOL);
+
+  const tokenAMint = poolState.tokenAMint;
+  const tokenBMint = poolState.tokenBMint;
+  const tokenAVault = poolState.tokenAVault;
+  const tokenBVault = poolState.tokenBVault;
+
+  const tokenAMintStr = tokenAMint.toBase58();
+  const tokenBMintStr = tokenBMint.toBase58();
+  const qbsMintStr = QBS_MINT.toBase58();
+  const wsolMintStr = WSOL_MINT.toBase58();
+
+  if (tokenAMintStr === qbsMintStr && tokenBMintStr === wsolMintStr) {
+    meteoraQbsVault = tokenAVault;
+    meteoraWsolVault = tokenBVault;
+    console.log("Meteora pool: tokenA = QBS, tokenB = WSOL");
+  } else if (tokenAMintStr === wsolMintStr && tokenBMintStr === qbsMintStr) {
+    meteoraQbsVault = tokenBVault;
+    meteoraWsolVault = tokenAVault;
+    console.log("Meteora pool: tokenA = WSOL, tokenB = QBS");
+  } else {
+    console.error(
+      "Meteora pool mints do not match QBS/WSOL. tokenA:",
+      tokenAMintStr,
+      "tokenB:",
+      tokenBMintStr
+    );
+    throw new Error("Meteora pool is not QBS-WSOL");
+  }
+
+  // Get mint decimals
+  const qbsMintInfo = await getMint(connection, QBS_MINT);
+  const wsolMintInfo = await getMint(connection, WSOL_MINT);
+  qbsDecimals = qbsMintInfo.decimals;
+  wsolDecimals = wsolMintInfo.decimals;
+
+  console.log(
+    `QBS decimals: ${qbsDecimals}, WSOL decimals: ${wsolDecimals}`
+  );
+  console.log(
+    "Meteora QBS vault:",
+    meteoraQbsVault.toBase58(),
+    "WSOL vault:",
+    meteoraWsolVault.toBase58()
+  );
+
+  meteoraInitialized = true;
+}
+
+// Read QBS/WSOL reserves from Meteora via vault accounts
+async function getMeteoraPriceFromSdk() {
+  if (!meteoraInitialized) {
+    await initMeteoraPool();
+  }
+
+  const qbsVaultAccount = await getAccount(connection, meteoraQbsVault);
+  const wsolVaultAccount = await getAccount(connection, meteoraWsolVault);
+
+  // tokenAccount.amount is a bigint; wrap in BN
+  const qbsRaw = new BN(qbsVaultAccount.amount.toString());
+  const wsolRaw = new BN(wsolVaultAccount.amount.toString());
+
+  const qbsDivisor = new BN(10).pow(new BN(qbsDecimals));
+  const wsolDivisor = new BN(10).pow(new BN(wsolDecimals));
+
+  const qbs = qbsRaw.div(qbsDivisor).toNumber();
+  const wsol = wsolRaw.div(wsolDivisor).toNumber();
+
+  console.log(
+    `Meteora SDK vault balances -> QBS: ${qbs}, WSOL: ${wsol}`
+  );
+
+  if (qbs <= 0 || wsol <= 0) {
+    return { solPerQbs: null, qbsPerSol: null };
+  }
+
+  const solPerQbs = wsol / qbs;
+  const qbsPerSol = qbs / wsol;
+
+  return { solPerQbs, qbsPerSol };
+}
+
+// -------------------------
+// Orca side (as before)
+// -------------------------
+
+async function getOrcaPrice() {
   const qbsAccounts = await connection.getParsedTokenAccountsByOwner(
-    poolPubkey,
+    ORCA_POOL,
     { mint: QBS_MINT }
   );
 
-  // WSOL balance in pool
   const wsolAccounts = await connection.getParsedTokenAccountsByOwner(
-    poolPubkey,
+    ORCA_POOL,
     { mint: WSOL_MINT }
   );
 
   const qbsTotal = sumUiAmount(qbsAccounts);
   const wsolTotal = sumUiAmount(wsolAccounts);
 
-  return { qbsTotal, wsolTotal };
-}
+  console.log(
+    `Orca pool balances    -> QBS: ${qbsTotal}, WSOL: ${wsolTotal}`
+  );
 
-function computePrice(qbsTotal, wsolTotal) {
   if (qbsTotal <= 0 || wsolTotal <= 0) {
     return { solPerQbs: null, qbsPerSol: null };
   }
+
   const solPerQbs = wsolTotal / qbsTotal;
   const qbsPerSol = qbsTotal / wsolTotal;
+
   return { solPerQbs, qbsPerSol };
 }
 
 // -------------------------
 // Main bot loop
 // -------------------------
+
 async function main() {
   console.log("Arby bot starting...");
 
-  // One-time: sanity check QBS mint exists
+  // Sanity check QBS mint
   try {
     const mintInfo = await connection.getParsedAccountInfo(QBS_MINT);
     const exists = mintInfo && mintInfo.value !== null;
@@ -112,35 +216,28 @@ async function main() {
     console.log("Error reading QBS mint:", e.message);
   }
 
+  // Initialize Meteora pool via SDK once
+  try {
+    await initMeteoraPool();
+  } catch (e) {
+    console.error("Failed to init Meteora pool:", e.message);
+  }
+
   while (true) {
     try {
       const slot = await connection.getSlot();
-      console.log("\n========== New cycle @ slot", slot, "==========");
+      console.log(`\n========== New cycle @ slot ${slot} ==========`);
 
-      // ----- Meteora pool -----
-      let meteoraBalances = await getPoolBalances(METEORA_POOL);
+      // ----- Meteora via SDK -----
+      const meteoraPrice = await getMeteoraPriceFromSdk();
       console.log(
-        `Meteora pool balances -> QBS: ${meteoraBalances.qbsTotal}, WSOL: ${meteoraBalances.wsolTotal}`
-      );
-      const meteoraPrice = computePrice(
-        meteoraBalances.qbsTotal,
-        meteoraBalances.wsolTotal
-      );
-      console.log(
-        `Meteora approx price: ${meteoraPrice.solPerQbs} SOL/QBS | ${meteoraPrice.qbsPerSol} QBS/SOL`
+        `Meteora price: ${meteoraPrice.solPerQbs} SOL/QBS | ${meteoraPrice.qbsPerSol} QBS/SOL`
       );
 
-      // ----- Orca pool -----
-      let orcaBalances = await getPoolBalances(ORCA_POOL);
+      // ----- Orca -----
+      const orcaPrice = await getOrcaPrice();
       console.log(
-        `Orca pool balances    -> QBS: ${orcaBalances.qbsTotal}, WSOL: ${orcaBalances.wsolTotal}`
-      );
-      const orcaPrice = computePrice(
-        orcaBalances.qbsTotal,
-        orcaBalances.wsolTotal
-      );
-      console.log(
-        `Orca approx price:    ${orcaPrice.solPerQbs} SOL/QBS | ${orcaPrice.qbsPerSol} QBS/SOL`
+        `Orca price:    ${orcaPrice.solPerQbs} SOL/QBS | ${orcaPrice.qbsPerSol} QBS/SOL`
       );
 
       // ----- Arbitrage signal -----
@@ -166,7 +263,9 @@ async function main() {
           console.log(
             `Arb signal: QBS is MORE expensive on Meteora by ${Math.abs(
               pct
-            ).toFixed(3)}% → buy on Orca, sell on Meteora`
+            ).toFixed(
+              3
+            )}% → buy on Orca, sell on Meteora`
           );
         }
       } else {
@@ -179,7 +278,7 @@ async function main() {
     }
 
     console.log("Arby heartbeat:", new Date().toISOString());
-    await sleep(10000); // wait 10 seconds
+    await sleep(LOOP_DELAY_MS);
   }
 }
 
