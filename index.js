@@ -1,29 +1,41 @@
-// index.js (Shyft-integrated FARTCOIN arb scanner)
+// index.js
 require('dotenv').config();
-const { getNormalizedPrices } = require('./shyft-scanner');
+const express = require('express');
+const { getNormalizedPrices } = require('./helius-scanner');
+
+const app = express();
+const PORT = 3000;
+
+// Health check endpoint
+app.get('/', (_, res) => {
+  res.status(200).send('OK');
+});
+
+app.listen(PORT, () => {
+  console.log(`Health check server running on port ${PORT}`);
+});
 
 async function runBotLoop() {
-  const now = new Date().toISOString();
-  console.log(`[${now}] Starting FARTCOIN arbitrage scan...`);
-
+  console.log(`[${new Date().toISOString()}] Starting FARTCOIN arbitrage scan...`);
   try {
     const prices = await getNormalizedPrices();
-    if (prices.length === 0) {
-      console.log('No viable FARTCOIN pools with sufficient liquidity.');
+    if (!Array.isArray(prices) || prices.length === 0) {
+      console.log('⚠️ No viable FARTCOIN pools found.');
       return;
     }
 
-    console.log(`Found ${prices.length} viable pools:`);
+    console.log(`✅ Found ${prices.length} viable pools:`);
     prices.forEach(p => {
       console.log(`→ ${p.baseSymbol}: ${p.price.toFixed(6)} (Liquidity: ${p.liquidity.toFixed(2)} SOL)`);
     });
 
-    // TODO: Add price spread detection and trade simulation logic here
+    // TODO: Price spread detection
+    // TODO: Simulated trade flow
 
   } catch (err) {
-    console.error('Error in arb bot loop:', err.message || err);
+    console.error('❌ Error in arb bot loop:', err.message || err);
   }
 }
 
-setInterval(runBotLoop, 30000); // every 30 seconds
+setInterval(runBotLoop, 30000);
 runBotLoop();
