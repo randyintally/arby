@@ -1,58 +1,40 @@
 // shyft-scanner.js
-// Scans all FARTCOIN liquidity pools and returns normalized prices
-// Requires: SHYFT_API_KEY set in environment
+// Queries Shyft's DeFi REST API for FARTCOIN pools and normalizes prices
 
 require('dotenv').config();
 const fetch = require('node-fetch');
 
 const SHYFT_API_KEY = process.env.SHYFT_API_KEY;
 const FARTCOIN_MINT = '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump';
-const MIN_SOL_LIQ = 3;
 const COMMON_BASES = [
   'So11111111111111111111111111111111111111112', // WSOL
   'Es9vMFrzaCERrVZHLTqdD9Mvb5A5kUvPaepnYkD4fEAh'  // USDC
 ];
-
-function normalizePrice(tokenAmount, baseAmount, tokenDecimals, baseDecimals) {
-  return (baseAmount / (10 ** baseDecimals)) / (tokenAmount / (10 ** tokenDecimals));
-}
+const MIN_SOL_LIQ = 3;
 
 async function findFartcoinPools() {
-  const url = `https://rpc.shyft.to/?api_key=${SHYFT_API_KEY}`;
-  const body = {
-    method: 'getPools',
-    jsonrpc: '2.0',
-    id: 1,
-    params: {
-      mint: FARTCOIN_MINT,
-    }
-  };
-
+  const url = `https://api.shyft.to/sol/v1/dex/pairs?token_address=${FARTCOIN_MINT}`;
   const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    headers: { 'x-api-key': SHYFT_API_KEY }
   });
-
-  if (!res.ok) {
-    throw new Error(`Shyft API request failed: ${res.status}`);
-  }
 
   const data = await res.json();
 
-  // DEBUG: Log full Shyft response if data is malformed
-  if (!data || !Array.isArray(data.data)) {
-    console.error('⚠️ Shyft API returned invalid or unexpected data:', data);
+  if (!Array.isArray(data?.data)) {
+    console.warn('⚠️ Shyft API returned invalid or unexpected data:', data);
     throw new Error('Unexpected Shyft API response: data.data not array');
   }
 
-  const pools = data.data.filter(pool =>
-    pool.reserveA && pool.reserveB &&
-    pool.tokenA && pool.tokenB &&
-    (pool.tokenA.mint === FARTCOIN_MINT || pool.tokenB.mint === FARTCOIN_MINT)
+  return data.data.filter(pool =>
+    pool?.liquidity &&
+    pool.liquidity.base &&
+    pool.liquidity.base >= MIN_SOL_LIQ &&
+    COMMON_BASES.includes(pool.base_token.address)
   );
+}
 
-  return pools;
+function normalizePrice(baseAmount, quoteAmount, baseDecimals, quoteDecimals) {
+  return (quoteAmount / (10 ** quoteDecimals)) / (baseAmount / (10 ** baseDecimals));
 }
 
 async function getNormalizedPrices() {
@@ -60,26 +42,30 @@ async function getNormalizedPrices() {
   const prices = [];
 
   for (const pool of pools) {
-    const { tokenA, tokenB, reserveA, reserveB } = pool;
-    const isFartcoinA = tokenA.mint === FARTCOIN_MINT;
-    const baseToken = isFartcoinA ? tokenB : tokenA;
+    const {
+      base_token,
+      quote_token,
+      base_token_amount,
+      quote_token_amount,
+      base_token_decimals,
+      quote_token_decimals,
+      lp_address
+    } = pool;
 
-    if (!COMMON_BASES.includes(baseToken.mint)) continue;
+    const price = normalizePrice(
+      base_token_amount,
+      quote_token_amount,
+      base_token_decimals,
+      quote_token_decimals
+    );
 
-    const price = isFartcoinA
-      ? normalizePrice(reserveA, reserveB, tokenA.decimals, tokenB.decimals)
-      : normalizePrice(reserveB, reserveA, tokenB.decimals, tokenA.decimals);
-
-    const liquidity = baseToken.mint === COMMON_BASES[0] ? reserveB / (10 ** baseToken.decimals) : 0;
-
-    if (liquidity >= MIN_SOL_LIQ) {
-      prices.push({
-        poolAddress: pool.address,
-        baseSymbol: baseToken.symbol,
-        price: price,
-        liquidity: liquidity,
-      });
-    }
+    prices.push({
+      poolAddress: lp_address,
+      baseToken: base_token.address,
+      baseSymbol: base_token.symbol,
+      price,
+      liquidity: pool.liquidity.base || 0,
+    });
   }
 
   return prices;
