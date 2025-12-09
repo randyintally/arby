@@ -1,61 +1,71 @@
 // index.js
 require('dotenv').config();
+const express = require('express');
 const { getNormalizedPrices } = require('./helius-scanner');
 const fetch = require('node-fetch');
 
-const JUPITER_API_URL = 'https://quote-api.jup.ag/v6/quote';
-const FARTCOIN_MINT = 'FART111111111111111111111111111111111111111'; // placeholder
-const SLIPPAGE_BPS = 100; // 1%
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-// Optional: simulate arbitrage using Jupiter quote API
-async function simulateTrade(inputMint, outputMint, amount) {
-  const url = `${JUPITER_API_URL}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    console.warn(`Jupiter quote failed: ${res.status}`);
-    return null;
-  }
-  const data = await res.json();
-  return data?.outAmount ? data.outAmount / 10 ** 6 : null; // assuming output is USDC/WSOL
-}
+// Health check endpoint (required by host)
+app.get('/', (_, res) => res.send('OK'));
+app.listen(PORT, () => console.log(`Health check server running on port ${PORT}`));
 
+// Core bot loop
 async function runBotLoop() {
-  console.log(`[${new Date().toISOString()}] Starting FARTCOIN arbitrage scan...`);
+  console.log('Starting FARTCOIN arbitrage scan...');
 
   try {
     const prices = await getNormalizedPrices();
     if (prices.length < 2) {
-      console.log('Not enough viable pools found for FARTCOIN.');
+      console.log('Not enough viable pools found.');
       return;
     }
 
-    prices.sort((a, b) => a.price - b.price);
-    const lowest = prices[0];
-    const highest = prices[prices.length - 1];
-    const spread = ((highest.price - lowest.price) / lowest.price) * 100;
+    console.log(`→ ${prices.length} viable pools loaded.`);
 
-    console.log(`→ Spread: ${spread.toFixed(2)}% | Low: ${lowest.price.toFixed(6)} (${lowest.baseSymbol}) → High: ${highest.price.toFixed(6)} (${highest.baseSymbol})`);
+    // Compare every pair of pools
+    for (let i = 0; i < prices.length; i++) {
+      for (let j = i + 1; j < prices.length; j++) {
+        const p1 = prices[i];
+        const p2 = prices[j];
+        const spread = Math.abs(p1.price - p2.price) / ((p1.price + p2.price) / 2);
 
-    if (spread > 2.0) {
-      const mockAmount = 100_000; // amount of FARTCOIN in base units
+        if (spread >= 0.05) { // 5% threshold
+          console.log(`🚨 Potential arbitrage between ${p1.baseSymbol} pools!`);
+          console.log(`    Pool A (${p1.poolAddress}): ${p1.price.toFixed(6)} (${p1.liquidity.toFixed(2)} SOL)`);
+          console.log(`    Pool B (${p2.poolAddress}): ${p2.price.toFixed(6)} (${p2.liquidity.toFixed(2)} SOL)`);
+          console.log(`    Spread: ${(spread * 100).toFixed(2)}%`);
 
-      const sellTo = await simulateTrade(FARTCOIN_MINT, highest.baseToken, mockAmount);
-      const buyFrom = await simulateTrade(lowest.baseToken, FARTCOIN_MINT, sellTo * 10 ** 6);
-
-      const roundtripGain = buyFrom - mockAmount;
-      const percent = (roundtripGain / mockAmount) * 100;
-
-      console.log(`🧪 Simulated Jupiter trade: +${roundtripGain.toFixed(0)} FARTCOIN (${percent.toFixed(2)}%)`);
-
-      if (percent > 0.5) {
-        console.log('💰 Potential arbitrage opportunity detected!');
+          await simulateJupiterQuote(p1.baseToken, p2.baseToken);
+        }
       }
     }
-
   } catch (err) {
-    console.error('Error in arb bot loop:', err.message || err);
+    console.error('Error in arb bot loop:', err.message);
   }
 }
 
-setInterval(runBotLoop, 30_000); // Run every 30 seconds
+// Simulate Jupiter swap between tokens
+async function simulateJupiterQuote(inputMint, outputMint) {
+  try {
+    const url = `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=1000000&slippageBps=100`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (data?.data?.[0]) {
+      const route = data.data[0];
+      console.log(`🔍 Simulated Jupiter quote:`);
+      console.log(`    In: ${route.inAmount / 1e6} → Out: ${route.outAmount / 1e6}`);
+      console.log(`    Estimated profit: ${((route.outAmount - route.inAmount) / 1e6).toFixed(6)} ${route.outTokenSymbol}`);
+    } else {
+      console.log(`    No route available for Jupiter simulation.`);
+    }
+  } catch (err) {
+    console.error('Failed to simulate Jupiter quote:', err.message);
+  }
+}
+
+// Loop every 30s
+setInterval(runBotLoop, 30000);
 runBotLoop();
