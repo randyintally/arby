@@ -11,16 +11,11 @@ const COMMON_BASES = [
 const MIN_SOL_LIQ = 3;
 
 async function findFartcoinPools() {
-  const url = 'https://api.shyft.to/sol/v1/dex/pairs';
+  const url = `https://api.shyft.to/sol/v1/dex/pairs?network=mainnet-beta&token_address=${FARTCOIN_MINT}`;
   const res = await fetch(url, {
-    method: 'POST',
     headers: {
-      'x-api-key': SHYFT_API_KEY,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      token_address: FARTCOIN_MINT
-    })
+      'x-api-key': SHYFT_API_KEY
+    }
   });
 
   const data = await res.json();
