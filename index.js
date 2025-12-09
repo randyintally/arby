@@ -1,11 +1,15 @@
 const http = require("http");
 const { Connection } = require("@solana/web3.js");
 
-// Basic Solana RPC (we can change this later)
+// -------------------------
+// Solana RPC
+// -------------------------
 const RPC_URL = "https://api.mainnet-beta.solana.com";
 const connection = new Connection(RPC_URL);
 
-// HTTP server just for DigitalOcean health checks
+// -------------------------
+// DigitalOcean Healthcheck Server
+// -------------------------
 const PORT = process.env.PORT || 3000;
 
 const server = http.createServer((req, res) => {
@@ -22,10 +26,17 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// QBS token mint
+const QBS_MINT = "2BAKjB47KpQD64m3nWGWrNjC2ZTwWpumYakJVgavdXQa";
+
+// -------------------------
+// Main bot loop
+// -------------------------
 async function main() {
   console.log("Arby bot starting...");
 
   while (true) {
+    // Fetch Solana slot
     try {
       const slot = await connection.getSlot();
       console.log("Solana slot:", slot);
@@ -33,8 +44,18 @@ async function main() {
       console.log("Solana RPC error:", e.message);
     }
 
+    // Fetch QBS Mint Metadata
+    try {
+      const mintInfo = await connection.getParsedAccountInfo(QBS_MINT);
+      console.log("QBS mint info:", mintInfo ? "ok" : "not found");
+    } catch (e) {
+      console.log("Error reading QBS mint:", e.message);
+    }
+
+    // Heartbeat
     console.log("Arby heartbeat:", new Date().toISOString());
-    await sleep(10000); // 10 seconds
+
+    await sleep(10000); // wait 10 seconds
   }
 }
 
