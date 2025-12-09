@@ -4,7 +4,7 @@ const fetch = require('node-fetch');
 
 const SHYFT_API_KEY = process.env.SHYFT_API_KEY;
 const SHYFT_URL = `https://rpc.shyft.to?api_key=${SHYFT_API_KEY}`;
-const FARTCOIN_MINT = '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump'; // placeholder
+const FARTCOIN_MINT = 'FART111111111111111111111111111111111111111'; // placeholder
 const MIN_LIQUIDITY_SOL = 3;
 
 async function getNormalizedPrices() {
@@ -22,9 +22,13 @@ async function getNormalizedPrices() {
   if (!response.ok) throw new Error(`Shyft API error: ${response.statusText}`);
 
   const { result } = await response.json();
+  if (!Array.isArray(result)) {
+    throw new Error(`Unexpected Shyft API response: ${JSON.stringify(result)}`);
+  }
+
   const fartPools = result.filter(pool => {
     return (
-      (pool.tokenA.mint === FARTCOIN_MINT || pool.tokenB.mint === FARTCOIN_MINT) &&
+      (pool.tokenA?.mint === FARTCOIN_MINT || pool.tokenB?.mint === FARTCOIN_MINT) &&
       Number(pool.liquidity || 0) >= MIN_LIQUIDITY_SOL
     );
   });
