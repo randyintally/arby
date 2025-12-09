@@ -1,53 +1,55 @@
-// index.js (enhanced with spread detection and Jupiter quote simulation)
+// index.js
 require('dotenv').config();
-const { getNormalizedPrices, simulateViaJupiter } = require('./helius-scanner');
+const { getNormalizedPrices } = require('./helius-scanner');
+const fetch = require('node-fetch');
 
-const FARTCOIN_MINT = 'FART111111111111111111111111111111111111111'; // replace with real
-const BASE_MINTS = {
-  WSOL: 'So11111111111111111111111111111111111111112',
-  USDC: 'Es9vMFrzaCERrVZHLTqdD9Mvb5A5kUvPaepnYkD4fEAh'
-};
+const JUPITER_API_URL = 'https://quote-api.jup.ag/v6/quote';
+const FARTCOIN_MINT = 'FART111111111111111111111111111111111111111'; // placeholder
+const SLIPPAGE_BPS = 100; // 1%
+
+// Optional: simulate arbitrage using Jupiter quote API
+async function simulateTrade(inputMint, outputMint, amount) {
+  const url = `${JUPITER_API_URL}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    console.warn(`Jupiter quote failed: ${res.status}`);
+    return null;
+  }
+  const data = await res.json();
+  return data?.outAmount ? data.outAmount / 10 ** 6 : null; // assuming output is USDC/WSOL
+}
 
 async function runBotLoop() {
-  console.log('\nStarting FARTCOIN arbitrage scan...');
+  console.log(`[${new Date().toISOString()}] Starting FARTCOIN arbitrage scan...`);
 
   try {
     const prices = await getNormalizedPrices();
-    if (prices.length === 0) {
-      console.log('No viable FARTCOIN pools with sufficient liquidity.');
+    if (prices.length < 2) {
+      console.log('Not enough viable pools found for FARTCOIN.');
       return;
     }
 
-    console.log(`Found ${prices.length} viable pools:`);
-    prices.forEach(p => {
-      console.log(`→ ${p.baseSymbol}: ${p.price.toFixed(6)} (${p.liquidity.toFixed(2)} SOL liquidity)`);
-    });
+    prices.sort((a, b) => a.price - b.price);
+    const lowest = prices[0];
+    const highest = prices[prices.length - 1];
+    const spread = ((highest.price - lowest.price) / lowest.price) * 100;
 
-    // Detect best and worst price
-    const sorted = [...prices].sort((a, b) => a.price - b.price);
-    const bestBuy = sorted[0];
-    const bestSell = sorted[sorted.length - 1];
+    console.log(`→ Spread: ${spread.toFixed(2)}% | Low: ${lowest.price.toFixed(6)} (${lowest.baseSymbol}) → High: ${highest.price.toFixed(6)} (${highest.baseSymbol})`);
 
-    const spread = ((bestSell.price - bestBuy.price) / bestBuy.price) * 100;
-    console.log(`Price spread: ${spread.toFixed(2)}%`);
+    if (spread > 2.0) {
+      const mockAmount = 100_000; // amount of FARTCOIN in base units
 
-    if (spread > 1.0) {
-      console.log(`Arbitrage opportunity detected! Buy from ${bestBuy.baseSymbol}, sell to ${bestSell.baseSymbol}`);
+      const sellTo = await simulateTrade(FARTCOIN_MINT, highest.baseToken, mockAmount);
+      const buyFrom = await simulateTrade(lowest.baseToken, FARTCOIN_MINT, sellTo * 10 ** 6);
 
-      const amount = 1000000; // 1 token in micro units, adjust as needed
-      const simBuy = await simulateViaJupiter(bestBuy.baseToken, FARTCOIN_MINT, amount);
-      const simSell = await simulateViaJupiter(FARTCOIN_MINT, bestSell.baseToken, amount);
+      const roundtripGain = buyFrom - mockAmount;
+      const percent = (roundtripGain / mockAmount) * 100;
 
-      if (simBuy && simSell) {
-        console.log(`→ Simulated Buy: ${simBuy.outAmount / 1e6} FARTCOIN`);
-        console.log(`→ Simulated Sell: ${simSell.outAmount / 1e6} ${bestSell.baseSymbol}`);
-        const estProfit = (simSell.outAmount - amount) / 1e6;
-        console.log(`→ Estimated Profit (simulated): ${estProfit.toFixed(6)} ${bestSell.baseSymbol}`);
-      } else {
-        console.log('Simulation failed or route unavailable.');
+      console.log(`🧪 Simulated Jupiter trade: +${roundtripGain.toFixed(0)} FARTCOIN (${percent.toFixed(2)}%)`);
+
+      if (percent > 0.5) {
+        console.log('💰 Potential arbitrage opportunity detected!');
       }
-    } else {
-      console.log('No profitable arbitrage opportunity found.');
     }
 
   } catch (err) {
@@ -55,5 +57,5 @@ async function runBotLoop() {
   }
 }
 
-setInterval(runBotLoop, 30000);
+setInterval(runBotLoop, 30_000); // Run every 30 seconds
 runBotLoop();
