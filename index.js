@@ -1,11 +1,14 @@
 const http = require("http");
-const { Connection } = require("@solana/web3.js");
+const { Connection, PublicKey } = require("@solana/web3.js");
 
 // -------------------------
 // Solana RPC
 // -------------------------
 const RPC_URL = "https://api.mainnet-beta.solana.com";
 const connection = new Connection(RPC_URL);
+
+// QBS token mint (as PublicKey, not string)
+const QBS_MINT = new PublicKey("2BAKjB47KpQD64m3nWGWrNjC2ZTwWpumYakJVgavdXQa");
 
 // -------------------------
 // DigitalOcean Healthcheck Server
@@ -26,9 +29,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// QBS token mint
-const QBS_MINT = "2BAKjB47KpQD64m3nWGWrNjC2ZTwWpumYakJVgavdXQa";
-
 // -------------------------
 // Main bot loop
 // -------------------------
@@ -44,10 +44,11 @@ async function main() {
       console.log("Solana RPC error:", e.message);
     }
 
-    // Fetch QBS Mint Metadata
+    // Fetch QBS Mint account info
     try {
       const mintInfo = await connection.getParsedAccountInfo(QBS_MINT);
-      console.log("QBS mint info:", mintInfo ? "ok" : "not found");
+      const exists = mintInfo && mintInfo.value !== null;
+      console.log("QBS mint info:", exists ? "ok" : "not found");
     } catch (e) {
       console.log("Error reading QBS mint:", e.message);
     }
