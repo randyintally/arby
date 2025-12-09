@@ -1,6 +1,4 @@
 // shyft-scanner.js
-// Queries Shyft's DeFi REST API for FARTCOIN pools and normalizes prices
-
 require('dotenv').config();
 const fetch = require('node-fetch');
 
@@ -13,9 +11,16 @@ const COMMON_BASES = [
 const MIN_SOL_LIQ = 3;
 
 async function findFartcoinPools() {
-  const url = `https://api.shyft.to/sol/v1/dex/pairs?token_address=${FARTCOIN_MINT}`;
+  const url = 'https://api.shyft.to/sol/v1/dex/pairs';
   const res = await fetch(url, {
-    headers: { 'x-api-key': SHYFT_API_KEY }
+    method: 'POST',
+    headers: {
+      'x-api-key': SHYFT_API_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      token_address: FARTCOIN_MINT
+    })
   });
 
   const data = await res.json();
@@ -26,9 +31,7 @@ async function findFartcoinPools() {
   }
 
   return data.data.filter(pool =>
-    pool?.liquidity &&
-    pool.liquidity.base &&
-    pool.liquidity.base >= MIN_SOL_LIQ &&
+    pool?.liquidity?.base >= MIN_SOL_LIQ &&
     COMMON_BASES.includes(pool.base_token.address)
   );
 }
