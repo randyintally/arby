@@ -1,30 +1,49 @@
-// index.js (Shyft-powered FARTCOIN scanner)
+// shyft-scanner.js
 require('dotenv').config();
-const { getNormalizedPrices } = require('./shyft-scanner');
+const fetch = require('node-fetch');
 
-async function runBotLoop() {
-  const time = new Date().toISOString();
-  console.log(`[${time}] Starting FARTCOIN arbitrage scan...`);
+const SHYFT_API_KEY = process.env.SHYFT_API_KEY;
+const SHYFT_URL = `https://rpc.shyft.to?api_key=${SHYFT_API_KEY}`;
+const FARTCOIN_MINT = 'FART111111111111111111111111111111111111111'; // placeholder
+const MIN_LIQUIDITY_SOL = 3;
 
-  try {
-    const prices = await getNormalizedPrices();
-    if (!prices.length) {
-      console.log('No viable FARTCOIN pools with sufficient liquidity.');
-      return;
-    }
+async function getNormalizedPrices() {
+  const response = await fetch(`${SHYFT_URL}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'getAllPools',
+      params: {}
+    })
+  });
 
-    console.log(`Found ${prices.length} viable pools:`);
-    prices.forEach(p => {
-      console.log(`→ ${p.baseSymbol}: ${p.price.toFixed(6)} (Liquidity: ${p.liquidity.toFixed(2)} SOL)`);
-    });
+  if (!response.ok) throw new Error(`Shyft API error: ${response.statusText}`);
 
-    // TODO: Add price spread detection across pairs
-    // TODO: Simulate trade execution
+  const { result } = await response.json();
+  const fartPools = result.filter(pool => {
+    return (
+      (pool.tokenA.mint === FARTCOIN_MINT || pool.tokenB.mint === FARTCOIN_MINT) &&
+      Number(pool.liquidity || 0) >= MIN_LIQUIDITY_SOL
+    );
+  });
 
-  } catch (err) {
-    console.error('Error in arb bot loop:', err.message);
-  }
+  return fartPools.map(pool => {
+    const fartIsA = pool.tokenA.mint === FARTCOIN_MINT;
+    const price = fartIsA
+      ? pool.tokenB.amount / pool.tokenA.amount
+      : pool.tokenA.amount / pool.tokenB.amount;
+
+    return {
+      poolAddress: pool.address,
+      baseSymbol: fartIsA ? pool.tokenB.symbol : pool.tokenA.symbol,
+      price: price,
+      liquidity: Number(pool.liquidity),
+    };
+  });
 }
 
-setInterval(runBotLoop, 30000); // every 30 seconds
-runBotLoop();
+module.exports = {
+  getNormalizedPrices
+};
